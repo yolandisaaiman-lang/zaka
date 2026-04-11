@@ -1,10 +1,10 @@
 import { runAgent } from './agent.js';
 
 async function main() {
-    console.log("Zaka AI initialized and beginning execution sequence.");
+    console.log("Zaka AI initialized.\n");
     
     // Check prerequisites
-    const requiredEnv = ['OPENAI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TARGET_URL', 'CLIENT_KEYWORDS'];
+    const requiredEnv = ['GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TARGET_URL', 'CLIENT_KEYWORDS'];
     for (const env of requiredEnv) {
         if (!process.env[env]) {
             console.error(`Missing required environment variable: ${env}`);
@@ -14,7 +14,7 @@ async function main() {
 
     try {
         await runAgent();
-        console.log("Execution sequence completed successfully.");
+        console.log("\nExecution completed successfully.");
         process.exit(0);
     } catch (error) {
         console.error("Critical error during agent execution:", error);
