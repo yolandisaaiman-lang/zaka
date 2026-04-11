@@ -92,6 +92,8 @@ Then call 'send_telegram_alert' with the formatted string. Once you have success
 
     console.log("Agent started.");
 
+    let tendersAlerted = 0;
+
     while (true) {
         const response = await openai.chat.completions.create({
             model: "gpt-4o",
@@ -110,7 +112,11 @@ Then call 'send_telegram_alert' with the formatted string. Once you have success
                 const functionArgs = JSON.parse(toolCall.function.arguments);
                 
                 console.log(`Agent is calling tool: ${functionName}`);
-                
+
+                if (functionName === "send_telegram_alert") {
+                    tendersAlerted++;
+                }
+
                 let functionResponse;
                 try {
                     functionResponse = await functionToCall(functionArgs);
@@ -133,5 +139,19 @@ Then call 'send_telegram_alert' with the formatted string. Once you have success
             }
             break;
         }
+    }
+
+    // Always send a completion summary to Telegram so the user knows the job ran
+    const timestamp = new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
+    const summaryMessage = tendersAlerted > 0
+        ? `✅ *Zaka AI — Scan Complete*\n\n📋 *${tendersAlerted} matching tender${tendersAlerted === 1 ? "" : "s"} found* and alert${tendersAlerted === 1 ? "" : "s"} sent above.\n\n🕐 *Completed:* ${timestamp}`
+        : `✅ *Zaka AI — Scan Complete*\n\n🔍 No matching tenders found this run.\n\n🕐 *Completed:* ${timestamp}`;
+
+    console.log("Sending completion summary to Telegram...");
+    try {
+        await send_telegram_alert({ formatted_message: summaryMessage });
+        console.log("Completion summary sent.");
+    } catch (e) {
+        console.error("Failed to send completion summary:", e.message);
     }
 }
