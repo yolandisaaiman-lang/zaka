@@ -1,4 +1,3 @@
-import FirecrawlApp from '@mendable/firecrawl-js';
 import axios from 'axios';
 import https from 'https';
 import { createRequire } from 'module';
@@ -7,69 +6,33 @@ import TelegramBot from 'node-telegram-bot-api';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
-const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY });
 const telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
 
-export async function fetch_latest_tenders({ url }) {
-    console.log(`Fetching latest tenders via crawl from: ${url}`);
+export async function fetch_latest_tenders() {
+    const url = process.env.TARGET_URL;
+    console.log(`Fetching latest tenders via API from: ${url}`);
     try {
-        const crawlResult = await firecrawl.crawlUrl(url, {
-            limit: 50,
-            scrapeOptions: {
-                formats: ['extract'],
-                actions: [
-                    { type: 'wait', milliseconds: 2000 },
-                    { type: 'click', selector: 'table a' },
-                    { type: 'wait', milliseconds: 2000 }
-                ],
-                extract: {
-                    prompt: "Extract tender details from this page. Look for the tender title, any direct PDF download links (href ending in .pdf or containing 'download'), the upload date or publication date, and the closing date. Return all tenders found on the page.",
-                    schema: {
-                        type: "object",
-                        properties: {
-                            tenders: {
-                                type: "array",
-                                items: {
-                                    type: "object",
-                                    properties: {
-                                        title: { type: "string" },
-                                        pdf_link: { type: "string" },
-                                        upload_date: { type: "string" },
-                                        closing_date: { type: "string" }
-                                    },
-                                    required: ["title"]
-                                }
-                            }
-                        },
-                        required: ["tenders"]
-                    }
-                }
-            },
-            allowBackwardLinks: false,
-            allowExternalLinks: false
+        const response = await axios.get(url);
+        const responseData = response.data;
+
+        // Handle both a direct array response and an object with a `data` property
+        const tenders = Array.isArray(responseData) ? responseData : (responseData.data || []);
+
+        const allTenders = tenders.map(tender => {
+            const pdfDoc = (tender.supportDocument || []).find(doc => doc.extension === '.pdf');
+            const pdf_link = pdfDoc
+                ? `https://www.etenders.gov.za/Home/DownloadDocument?id=${pdfDoc.supportDocumentID}`
+                : null;
+
+            return {
+                title: tender.description,
+                pdf_link,
+                upload_date: tender.date_Published
+            };
         });
 
-        if (crawlResult.success) {
-            // Aggregate tenders from all crawled pages, deduplicating by title
-            const seen = new Set();
-            const allTenders = [];
-
-            for (const page of crawlResult.data || []) {
-                const pageTenders = page.extract?.tenders || [];
-                for (const tender of pageTenders) {
-                    if (tender.title && !seen.has(tender.title)) {
-                        seen.add(tender.title);
-                        allTenders.push(tender);
-                    }
-                }
-            }
-
-            console.log(`Crawl complete. Found ${allTenders.length} unique tenders across ${(crawlResult.data || []).length} pages.`);
-            return JSON.stringify(allTenders);
-        } else {
-            console.error('Firecrawl crawl failed:', crawlResult.error);
-            return JSON.stringify({ error: crawlResult.error });
-        }
+        console.log(`API fetch complete. Found ${allTenders.length} tenders.`);
+        return JSON.stringify(allTenders);
     } catch (error) {
         console.error('Error fetching latest tenders:', error.message);
         return JSON.stringify({ error: error.message });

@@ -11,16 +11,10 @@ const toolDefinitions = [
         type: "function",
         function: {
             name: "fetch_latest_tenders",
-            description: "Fetches and scrapes the latest tenders from a given URL via Firecrawl, returning a JSON stringified array of {title, pdf_link, upload_date}.",
+            description: "Fetches the latest tenders directly from the eTenders API (TARGET_URL env var), returning a JSON stringified array of {title, pdf_link, upload_date}.",
             parameters: {
                 type: "object",
-                properties: {
-                    url: {
-                        type: "string",
-                        description: "The target URL to scrape"
-                    }
-                },
-                required: ["url"]
+                properties: {}
             }
         }
     },
@@ -73,16 +67,7 @@ export async function runAgent() {
     const messages = [
         {
             role: "system",
-            content: `You are Zaka AI. Your goal is to find tenders matching these keywords: [${clientKeywords}]. 
-Your initial task is to call 'fetch_latest_tenders' on the URL: ${targetUrl}. 
-For every PDF link returned, you must call 'extract_tender_text' to read its contents. 
-If the contents indicate the tender matches the client's keywords, format a clean, emoji-rich summary string containing: 
-- Tender Name 
-- Closing Date 
-- CIDB Grading Required 
-- Mandatory Documents
-
-Then call 'send_telegram_alert' with the formatted string. Once you have successfully processed the tenders and sent the alerts for the matching ones, you can tell the user you are finished.`
+            content: `You are Zaka AI. Your goal is to find tenders matching these keywords: [${clientKeywords}]. \nYour initial task is to call 'fetch_latest_tenders' (no arguments needed — it reads the API URL from the environment). \nFor every PDF link returned, you must call 'extract_tender_text' to read its contents. \nIf the contents indicate the tender matches the client's keywords, format a clean, emoji-rich summary string containing: \n- Tender Name \n- Closing Date \n- CIDB Grading Required \n- Mandatory Documents\n\nThen call 'send_telegram_alert' with the formatted string. Once you have successfully processed the tenders and sent the alerts for the matching ones, you can tell the user you are finished.`
         },
         {
             role: "user",
