@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { fetch_latest_tenders, extract_tender_text, send_telegram_alert } from './tools.js';
+import { fetch_latest_tenders, pre_filter_tender_json, download_secure_etender_pdf, send_telegram_alert } from './tools.js';
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
@@ -11,13 +11,13 @@ const toolDefinitions = [
         type: "function",
         function: {
             name: "fetch_latest_tenders",
-            description: "Fetches and scrapes the latest tenders from a given URL via Firecrawl, returning a JSON stringified array of {title, pdf_link, upload_date}.",
+            description: "Fetches the latest tenders from the eTenders API, returning a JSON array of {title, category, pdf_link, upload_date}.",
             parameters: {
                 type: "object",
                 properties: {
                     url: {
                         type: "string",
-                        description: "The target URL to scrape"
+                        description: "The eTenders API endpoint URL"
                     }
                 },
                 required: ["url"]
@@ -27,14 +27,39 @@ const toolDefinitions = [
     {
         type: "function",
         function: {
-            name: "extract_tender_text",
-            description: "Downloads a PDF from a URL and extracts its raw text content. Returns JSON stringified {text: ...}.",
+            name: "pre_filter_tender_json",
+            description: "Fast, cheap pre-filter that checks if a tender's metadata (title and category) is remotely relevant to the client's keywords. Returns {relevant: true/false}. Call this BEFORE attempting any PDF download to save time and cost.",
+            parameters: {
+                type: "object",
+                properties: {
+                    description: {
+                        type: "string",
+                        description: "The tender title/description from the JSON metadata"
+                    },
+                    category: {
+                        type: "string",
+                        description: "The tender category from the JSON metadata"
+                    },
+                    client_keywords: {
+                        type: "string",
+                        description: "Comma-separated list of the client's business keywords"
+                    }
+                },
+                required: ["description", "category", "client_keywords"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "download_secure_etender_pdf",
+            description: "Securely downloads and extracts text from an eTenders PDF using session-aware cookies with a Playwright headless browser fallback. Returns {text: ...} with the extracted PDF content. Only call this AFTER pre_filter_tender_json returns relevant: true.",
             parameters: {
                 type: "object",
                 properties: {
                     pdf_url: {
                         type: "string",
-                        description: "The URL of the PDF to extract text from"
+                        description: "The full eTenders document download URL"
                     }
                 },
                 required: ["pdf_url"]
@@ -62,7 +87,8 @@ const toolDefinitions = [
 
 const availableTools = {
     fetch_latest_tenders,
-    extract_tender_text,
+    pre_filter_tender_json,
+    download_secure_etender_pdf,
     send_telegram_alert
 };
 
@@ -75,21 +101,28 @@ export async function runAgent() {
             role: "system",
             content: `You are Zaka AI, an elite, highly accurate Tender Scouting Agent operating in South Africa. Your job is to save contractors time by reading massive, bureaucratic government tender documents and extracting only the absolute most critical information.
 
-YOUR WORKFLOW:
-Your initial task is to call 'fetch_latest_tenders' on the URL: ${targetUrl}. 
-For every PDF link returned, you must call 'extract_tender_text' to read its contents.
+YOUR WORKFLOW (follow this exact order):
 
-YOUR OBJECTIVE:
-You will be provided with raw, unformatted text extracted from a municipal tender PDF. You must analyze this text and determine if it is a highly relevant match for a contractor whose core business is defined by these keywords: [${clientKeywords}].
+PHASE 1 — FETCH
+Call 'fetch_latest_tenders' with the URL: ${targetUrl}
+This returns a JSON array of tenders, each with: title, category, pdf_link, upload_date.
 
-STEP 1: THE FILTER (CRITICAL) Analyze the scope of work.
-If the tender has NOTHING to do with [${clientKeywords}], you must abort. Return exactly and only the word: "REJECT" for that tender.
-If the tender is a match for [${clientKeywords}], proceed to Step 2.
+PHASE 2 — PRE-FILTER (MANDATORY for every tender)
+For EACH tender returned, call 'pre_filter_tender_json' with:
+  - description: the tender title
+  - category: the tender category
+  - client_keywords: "${clientKeywords}"
+This is a fast, cheap check. If it returns {relevant: false}, SKIP that tender entirely — do NOT attempt to download its PDF.
 
-STEP 2: THE EXTRACTION & FORMATTING
-If the tender is a match, you must extract the key bidding data and format it into a clean, highly readable message designed for a Telegram chat.
+PHASE 3 — SECURE PDF DOWNLOAD (only for relevant tenders)
+For each tender where pre-filter returned {relevant: true}, call 'download_secure_etender_pdf' with the pdf_link.
+This will return {text: "..."} with the extracted PDF content, or {error: "..."} if the download failed.
+If you get an error, log it and move to the next tender.
 
-You must strictly use the exact markdown and emoji formatting below. Do not add conversational filler. Be precise.
+PHASE 4 — ANALYSIS & DELIVERY
+For each successfully extracted PDF text, analyze it against the client keywords: [${clientKeywords}].
+
+If the PDF content confirms the tender is a strong match, extract the key data and format it using the EXACT template below, then call 'send_telegram_alert':
 
 🚨 NEW TENDER ALERT 🚨
 
@@ -104,7 +137,12 @@ Required CIDB: [Extract the specific CIDB grading required, e.g., "3 GB" or "4 C
 🔗 Document Link: [Insert the pdf_link of the tender]
 ⚡ Scouted by Zaka AI
 
-For every matching tender, call 'send_telegram_alert' with the formatted string. Once you have successfully processed the tenders and sent the alerts for the matching ones, you can tell the user you are finished.`
+If the PDF text does NOT confirm relevance after deeper reading, simply skip it.
+
+IMPORTANT RULES:
+- ALWAYS pre-filter before downloading. Never skip the pre-filter step.
+- Process all tenders from the fetch results, not just the first one.
+- Once all tenders are processed, you are finished.`
         },
         {
             role: "user",
