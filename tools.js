@@ -11,38 +11,64 @@ const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY });
 const telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
 
 export async function fetch_latest_tenders({ url }) {
-    console.log(`Fetching latest tenders from: ${url}`);
+    console.log(`Fetching latest tenders via crawl from: ${url}`);
     try {
-        const scrapeResult = await firecrawl.scrapeUrl(url, {
-            formats: ['extract'],
-            extract: {
-                prompt: "Extract a list of the latest tenders. Ensure you get the title, the direct link to the PDF, and the upload date (or closing date if upload date is not present). Only include tenders from the last 24-48 hours if dates are specified. If dates are not clear, extract them anyway.",
-                schema: {
-                    type: "object",
-                    properties: {
-                        tenders: {
-                            type: "array",
-                            items: {
-                                type: "object",
-                                properties: {
-                                    title: { type: "string" },
-                                    pdf_link: { type: "string" },
-                                    upload_date: { type: "string" }
-                                },
-                                required: ["title", "pdf_link"]
+        const crawlResult = await firecrawl.crawlUrl(url, {
+            limit: 50,
+            scrapeOptions: {
+                formats: ['extract'],
+                actions: [
+                    { type: 'wait', milliseconds: 2000 },
+                    { type: 'click', selector: 'table a' },
+                    { type: 'wait', milliseconds: 2000 }
+                ],
+                extract: {
+                    prompt: "Extract tender details from this page. Look for the tender title, any direct PDF download links (href ending in .pdf or containing 'download'), the upload date or publication date, and the closing date. Return all tenders found on the page.",
+                    schema: {
+                        type: "object",
+                        properties: {
+                            tenders: {
+                                type: "array",
+                                items: {
+                                    type: "object",
+                                    properties: {
+                                        title: { type: "string" },
+                                        pdf_link: { type: "string" },
+                                        upload_date: { type: "string" },
+                                        closing_date: { type: "string" }
+                                    },
+                                    required: ["title"]
+                                }
                             }
-                        }
-                    },
-                    required: ["tenders"]
+                        },
+                        required: ["tenders"]
+                    }
+                }
+            },
+            allowBackwardLinks: false,
+            allowExternalLinks: false
+        });
+
+        if (crawlResult.success) {
+            // Aggregate tenders from all crawled pages, deduplicating by title
+            const seen = new Set();
+            const allTenders = [];
+
+            for (const page of crawlResult.data || []) {
+                const pageTenders = page.extract?.tenders || [];
+                for (const tender of pageTenders) {
+                    if (tender.title && !seen.has(tender.title)) {
+                        seen.add(tender.title);
+                        allTenders.push(tender);
+                    }
                 }
             }
-        });
-        
-        if (scrapeResult.success) {
-            return JSON.stringify(scrapeResult.extract.tenders || []);
+
+            console.log(`Crawl complete. Found ${allTenders.length} unique tenders across ${(crawlResult.data || []).length} pages.`);
+            return JSON.stringify(allTenders);
         } else {
-            console.error('Firecrawl scrape failed:', scrapeResult.error);
-            return JSON.stringify({ error: scrapeResult.error });
+            console.error('Firecrawl crawl failed:', crawlResult.error);
+            return JSON.stringify({ error: crawlResult.error });
         }
     } catch (error) {
         console.error('Error fetching latest tenders:', error.message);
