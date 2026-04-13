@@ -1,4 +1,4 @@
-import { search_tenders_with_perplexity, format_tenders_with_gemini, send_telegram_alert } from './tools.js';
+import { search_tenders_with_perplexity, format_tenders_with_openai, send_telegram_alert } from './tools.js';
 
 export async function runAgent() {
     const keywords = process.env.CLIENT_KEYWORDS;
@@ -18,13 +18,13 @@ export async function runAgent() {
         return;
     }
 
-    console.log(`\nPerplexity returned results. Sending to Gemini for extraction & formatting...\n`);
+    console.log(`\nPerplexity returned results. Sending to OpenAI for extraction & formatting...\n`);
 
-    // ── Phase 2: Gemini extracts + formats matching tenders ──
-    const geminiResult = await format_tenders_with_gemini(searchResults, citations, keywords);
+    // ── Phase 2: OpenAI extracts + formats matching tenders ──
+    const geminiResult = await format_tenders_with_openai(searchResults, citations, keywords);
 
     if (geminiResult.toUpperCase().startsWith('REJECT')) {
-        console.log('Gemini found no matching tenders in the search results.');
+        console.log('OpenAI found no matching tenders in the search results.');
         const timestamp = new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
         await send_telegram_alert(`✅ *Zaka AI — Scan Complete*\n\n🔍 Perplexity searched the web but no tenders matched your keywords.\n\n🕐 *Completed:* ${timestamp}`);
         return;

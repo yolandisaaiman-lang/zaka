@@ -1,13 +1,15 @@
 import { OpenAI } from 'openai';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import TelegramBot from 'node-telegram-bot-api';
 
 const telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const perplexity = new OpenAI({
     apiKey: process.env.PERPLEXITY_API_KEY,
     baseURL: 'https://api.perplexity.ai',
+});
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
 });
 
 // ─── Search for tenders using Perplexity Sonar ───────────────────────────────
@@ -15,40 +17,56 @@ export async function search_tenders_with_perplexity(keywords) {
     console.log(`Searching for tenders via Perplexity Sonar...`);
     console.log(`Keywords: ${keywords}\n`);
 
+    // Split keywords into an array for clearer prompting
+    const keywordList = keywords.split(',').map(k => k.trim()).filter(Boolean);
+
     try {
         const response = await perplexity.chat.completions.create({
             model: 'sonar',
             messages: [
                 {
                     role: 'system',
-                    content: `You are a South African government tender research assistant. 
-Your ONLY job is to find REAL, currently OPEN government tenders. 
-Return ONLY factual tender listings with verifiable details.
-Do NOT fabricate or invent tender numbers, dates, or departments.
-If you cannot find any matching open tenders, say "NO_RESULTS_FOUND".`
+                    content: `You are a South African government tender research specialist.
+Your job is to search the web and find REAL, currently OPEN government tenders.
+You must return ONLY factual, verifiable tender listings.
+NEVER fabricate tender numbers, dates, departments, or any details.
+If you find no matching tenders, respond with exactly: NO_RESULTS_FOUND`
                 },
                 {
                     role: 'user',
-                    content: `Find all currently open South African government tenders related to these keywords: ${keywords}
+                    content: `Search for currently open South African government tenders that match ANY of these keywords:
 
-Search these sources:
-- etenders.gov.za (South African National Treasury eTender Portal)
+${keywordList.map((kw, i) => `${i + 1}. ${kw}`).join('\n')}
+
+SEARCH THESE SOURCES:
+- etenders.gov.za (SA National Treasury eTender Portal)  
 - CIDB (Construction Industry Development Board)
-- Municipal and provincial tender portals
+- Municipal tender portals (e.g. Johannesburg, Cape Town, eThekwini, Tshwane)
+- Provincial government tender pages
 - Government Tender Bulletin
+- sa-tenders.co.za
 
-For EACH tender found, provide ALL available details:
-- Tender number / reference
-- Issuing department, municipality, or organ of state
-- Full description of the work
-- Province / location
-- Date published
-- Closing date and time
-- Contact person, email, telephone
-- Whether there is a compulsory briefing session (date, time, venue)
-- Source URL where the tender was found
+For EVERY tender you find, extract and list these details:
+• Tender Number / Reference Number
+• Organ of State / Issuing Department / Municipality
+• Tender Type (e.g. Open Bid, RFQ, RFP)
+• Full Description of the work required
+• Province
+• Date Published
+• Closing Date and Time
+• Place / Location where work is required
+• Contact Person name
+• Contact Email
+• Contact Telephone
+• Is there a Briefing Session? (Yes/No)
+• Is the Briefing Compulsory? (Yes/No)
+• Briefing Date and Time
+• Briefing Venue / Location
+• Source URL
 
-CRITICAL: Only include tenders with a closing date in the future (after today, ${new Date().toISOString().split('T')[0]}). Do not include expired tenders.`
+TODAY'S DATE: ${new Date().toISOString().split('T')[0]}
+ONLY include tenders with a closing date AFTER today. Exclude all expired tenders.
+Be thorough — search for each keyword individually if needed.`
                 }
             ],
         });
@@ -61,6 +79,10 @@ CRITICAL: Only include tenders with a closing date in the future (after today, $
             console.log(`  📎 ${citations.length} source(s) cited.`);
         }
 
+        // Log a preview of results
+        const preview = content.substring(0, 200);
+        console.log(`  📋 Preview: ${preview}...\n`);
+
         return { content, citations };
     } catch (error) {
         console.error('✘ Perplexity search error:', error.message);
@@ -68,76 +90,81 @@ CRITICAL: Only include tenders with a closing date in the future (after today, $
     }
 }
 
-// ─── Use Gemini to extract and format tenders from Perplexity results ────────
-export async function format_tenders_with_gemini(searchResults, citations, keywords) {
+// ─── Use OpenAI to extract and format tenders from Perplexity results ────────
+export async function format_tenders_with_openai(searchResults, citations, keywords) {
     const citationText = citations.length > 0
-        ? `\n\nSource URLs from search:\n${citations.map((c, i) => `[${i + 1}] ${c}`).join('\n')}`
+        ? `\n\nSource URLs from the web search:\n${citations.map((c, i) => `[${i + 1}] ${c}`).join('\n')}`
         : '';
 
-    const zakaPrompt = `
-You are Zaka AI, an elite tender formatting agent.
+    try {
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: `You are Zaka AI, a tender formatting agent for South African government tenders. You receive raw web search results and must extract, filter, and format them into a precise Telegram message format. You never invent data — only extract what exists in the search results.`
+                },
+                {
+                    role: 'user',
+                    content: `Below are RAW SEARCH RESULTS about South African government tenders. Process them with these steps:
 
-You have received RAW SEARCH RESULTS about South African government tenders from a web search. Your job is to:
+**STEP 1 — EXTRACT:** Identify every individual tender listing in the search results.
 
-**STEP 1: EXTRACT**
-Parse the search results below and identify individual tenders.
+**STEP 2 — FILTER:** Keep ONLY tenders that strongly match these client keywords: [${keywords}].
+These are for a civil engineering / construction contractor. Keep tenders related to:
+- Civil engineering works, construction, infrastructure
+- Roadworks, paving, pothole repairs
+- Stormwater drainage, trenching
+- Bulk water supply, sewer reticulation  
+- Earthworks, excavation
+- Any CIDB-graded construction work
+DISCARD tenders for IT, consulting, catering, cleaning, security, or anything unrelated to physical construction/engineering works.
 
-**STEP 2: FILTER**  
-Only keep tenders that are a STRONG match for these client keywords: [${keywords}].
-Focus on civil engineering, construction, infrastructure, and related physical works.
-Discard anything unrelated (IT, catering, consulting, etc.) unless it specifically matches a keyword.
+**STEP 3 — FORMAT:** For each matching tender, output it in EXACTLY this Telegram format. Use "Not Provided" for any missing fields:
 
-**STEP 3: FORMAT**
-For EACH matching tender, output a message formatted EXACTLY like this (use these exact labels and emojis). If a field is not available, write "Not Provided":
+**ZAKA AI - NEW TENDER MATCH** 🚨
 
-🚨 **ZAKA AI - NEW TENDER MATCH** 🚨
-
-**Tender Number:** [number]
-**Organ of State:** [department/municipality]
-**Description:** [full description of work]
-**Province:** [province]
-**Date Published:** [YYYY/MM/DD]
-**Closing Date:** [YYYY/MM/DD HH:MM]
+**Tender Number:** [the tender/reference number]
+**Organ of State:** [issuing department or municipality]
+**Tender Type:** [type e.g. Open Bid, RFQ, RFP]
+**Province:** [province name]
+**Date Published:** [YYYY/MM/DD format]
+**Closing Date:** [YYYY/MM/DD HH:MM format]
 
 📍 **Location Details:**
-**Place Required:** [location/town]
+**Place Required:** [town, city, or street address where work is needed]
 
 👤 **Contact Details:**
-**Contact Person:** [name]
-**Email:** [email]
-**Telephone:** [phone]
+**Contact Person:** [full name]
+**Email:** [email address]
+**Telephone:** [phone number]
 
 📅 **Briefing Session:**
-**Is there a briefing?:** [Yes/No]
-**Is it compulsory?:** [Yes/No]
-**Briefing Date/Time:** [date and time]
-**Briefing Venue:** [venue]
-
-🔗 **Source:** [URL where tender was found]
-
---
-⚡ *Scouted by Zaka AI*
+**Is there a briefing?:** [Yes or No]
+**Is it compulsory?:** [Yes or No]
+**Briefing Date/Time:** [date and time if available]
+**Briefing Venue:** [venue/location if available]
 
 ===TENDER_SEPARATOR===
 
-**IMPORTANT RULES:**
-- Separate each tender with ===TENDER_SEPARATOR===
-- If NO tenders match the keywords, return exactly: REJECT
-- Do NOT invent or fabricate any tender details
-- Extract only what is explicitly stated in the search results
+**CRITICAL RULES:**
+1. Separate each tender with the exact text: ===TENDER_SEPARATOR===
+2. If ZERO tenders match the client keywords, return ONLY the word: REJECT
+3. Do NOT invent, fabricate, or guess any tender details
+4. Only extract information explicitly stated in the search results
+5. Do NOT add any extra commentary, headers, or footers — just the formatted tenders separated by ===TENDER_SEPARATOR===
 
-Here are the search results to process:
+--- RAW SEARCH RESULTS ---
 ${searchResults}
-${citationText}
-`;
+${citationText}`
+                }
+            ],
+            temperature: 0.1,
+        });
 
-    try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-        const result = await model.generateContent(zakaPrompt);
-        const text = result.response.text().trim();
-        return text;
+        return response.choices[0].message.content.trim();
     } catch (error) {
-        console.error('✘ Gemini formatting error:', error.message);
+        console.error('✘ OpenAI formatting error:', error.message);
         return 'REJECT';
     }
 }
@@ -148,7 +175,6 @@ export async function send_telegram_alert(message) {
     try {
         // Telegram has a 4096 char limit per message
         if (message.length > 4000) {
-            // Split long messages
             const chunks = [];
             let remaining = message;
             while (remaining.length > 0) {
@@ -156,7 +182,6 @@ export async function send_telegram_alert(message) {
                     chunks.push(remaining);
                     break;
                 }
-                // Find a good break point
                 let breakPoint = remaining.lastIndexOf('\n', 4000);
                 if (breakPoint < 2000) breakPoint = 4000;
                 chunks.push(remaining.substring(0, breakPoint));
