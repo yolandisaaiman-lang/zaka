@@ -4,7 +4,7 @@ async function main() {
     console.log("Zaka AI initialized.\n");
     
     // Check prerequisites
-    const requiredEnv = ['GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TARGET_URL', 'CLIENT_KEYWORDS'];
+    const requiredEnv = ['GEMINI_API_KEY', 'PERPLEXITY_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'CLIENT_KEYWORDS'];
     for (const env of requiredEnv) {
         if (!process.env[env]) {
             console.error(`Missing required environment variable: ${env}`);

@@ -1,60 +1,56 @@
-import { fetch_latest_tenders, evaluate_tender_with_gemini, send_telegram_alert } from './tools.js';
+import { search_tenders_with_perplexity, format_tenders_with_gemini, send_telegram_alert } from './tools.js';
 
 export async function runAgent() {
-    const targetUrl = process.env.TARGET_URL;
+    const keywords = process.env.CLIENT_KEYWORDS;
 
     console.log('═══════════════════════════════════════════');
     console.log('  ZAKA AI — Tender Scout Starting...');
+    console.log('  Powered by Perplexity Sonar + Gemini');
     console.log('═══════════════════════════════════════════');
 
-    // ── Phase 1: Fetch tenders from eTenders JSON API ──
-    const tenders = await fetch_latest_tenders(targetUrl);
+    // ── Phase 1: Search for tenders via Perplexity ──
+    const { content: searchResults, citations } = await search_tenders_with_perplexity(keywords);
 
-    if (!tenders.length) {
-        console.log('No tenders returned from API. Exiting.');
+    if (searchResults === 'NO_RESULTS_FOUND' || !searchResults) {
+        console.log('Perplexity returned no results. Exiting.');
         const timestamp = new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
-        await send_telegram_alert(`✅ *Zaka AI — Scan Complete*\n\n⚠️ API returned 0 tenders.\n\n🕐 *Completed:* ${timestamp}`);
+        await send_telegram_alert(`✅ *Zaka AI — Scan Complete*\n\n⚠️ Perplexity search returned no tender results.\n\n🕐 *Completed:* ${timestamp}`);
         return;
     }
 
-    console.log(`\nProcessing ${tenders.length} tenders through Gemini...\n`);
+    console.log(`\nPerplexity returned results. Sending to Gemini for extraction & formatting...\n`);
 
-    let tendersAlerted = 0;
-    let tendersRejected = 0;
+    // ── Phase 2: Gemini extracts + formats matching tenders ──
+    const geminiResult = await format_tenders_with_gemini(searchResults, citations, keywords);
 
-    // ── Phase 2: Loop → Gemini evaluate → Telegram deliver ──
-    for (let i = 0; i < tenders.length; i++) {
-        const tender = tenders[i];
-        const label = tender.description || `Tender #${i + 1}`;
-        console.log(`[${i + 1}/${tenders.length}] Evaluating: "${label}"`);
-
-        // Send to Gemini for filtering + formatting
-        const geminiResult = await evaluate_tender_with_gemini(tender);
-
-        // Check if Gemini rejected
-        if (geminiResult.toUpperCase().startsWith('REJECT')) {
-            console.log(`  → ❌ REJECTED by Gemini.\n`);
-            tendersRejected++;
-            continue;
-        }
-
-        // Gemini returned a formatted match — send to Telegram
-        console.log(`  → ✅ MATCH! Sending to Telegram...`);
-        await send_telegram_alert(geminiResult);
-        tendersAlerted++;
-        console.log('');
+    if (geminiResult.toUpperCase().startsWith('REJECT')) {
+        console.log('Gemini found no matching tenders in the search results.');
+        const timestamp = new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
+        await send_telegram_alert(`✅ *Zaka AI — Scan Complete*\n\n🔍 Perplexity searched the web but no tenders matched your keywords.\n\n🕐 *Completed:* ${timestamp}`);
+        return;
     }
 
-    // ── Phase 3: Completion summary ──
-    console.log('───────────────────────────────────────────');
-    console.log(`Scan complete. ${tendersAlerted} match(es), ${tendersRejected} rejected.`);
-    console.log('───────────────────────────────────────────');
+    // ── Phase 3: Split individual tenders and send to Telegram ──
+    const tenderMessages = geminiResult
+        .split('===TENDER_SEPARATOR===')
+        .map(t => t.trim())
+        .filter(t => t.length > 0 && !t.toUpperCase().startsWith('REJECT'));
 
+    console.log(`\n📋 ${tenderMessages.length} matching tender(s) found. Sending to Telegram...\n`);
+
+    let sentCount = 0;
+    for (const msg of tenderMessages) {
+        const success = await send_telegram_alert(msg);
+        if (success) sentCount++;
+    }
+
+    // ── Summary ──
     const timestamp = new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
-    const summaryMessage = tendersAlerted > 0
-        ? `✅ *Zaka AI — Scan Complete*\n\n📋 *${tendersAlerted} matching tender${tendersAlerted === 1 ? '' : 's'} found* and sent above.\n🚫 ${tendersRejected} tender${tendersRejected === 1 ? '' : 's'} rejected.\n\n🕐 *Completed:* ${timestamp}`
-        : `✅ *Zaka AI — Scan Complete*\n\n🔍 No matching tenders found this run.\n🚫 ${tendersRejected} tender${tendersRejected === 1 ? '' : 's'} reviewed and rejected.\n\n🕐 *Completed:* ${timestamp}`;
+    const summaryMessage = `✅ *Zaka AI — Scan Complete*\n\n📋 *${sentCount} matching tender${sentCount === 1 ? '' : 's'} found* and sent above.\n\n🕐 *Completed:* ${timestamp}`;
 
     await send_telegram_alert(summaryMessage);
-    console.log('Summary sent. Agent finished.');
+
+    console.log('───────────────────────────────────────────');
+    console.log(`Scan complete. ${sentCount} tender(s) delivered.`);
+    console.log('───────────────────────────────────────────');
 }

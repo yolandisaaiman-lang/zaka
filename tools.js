@@ -1,76 +1,134 @@
-import axios from 'axios';
+import { OpenAI } from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import TelegramBot from 'node-telegram-bot-api';
 
 const telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// ─── Fetch tender list from eTenders JSON API ────────────────────────────────
-export async function fetch_latest_tenders(url) {
-    console.log(`Fetching tenders from eTenders API...`);
+const perplexity = new OpenAI({
+    apiKey: process.env.PERPLEXITY_API_KEY,
+    baseURL: 'https://api.perplexity.ai',
+});
+
+// ─── Search for tenders using Perplexity Sonar ───────────────────────────────
+export async function search_tenders_with_perplexity(keywords) {
+    console.log(`Searching for tenders via Perplexity Sonar...`);
+    console.log(`Keywords: ${keywords}\n`);
+
     try {
-        const response = await axios.get(url, {
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+        const response = await perplexity.chat.completions.create({
+            model: 'sonar',
+            messages: [
+                {
+                    role: 'system',
+                    content: `You are a South African government tender research assistant. 
+Your ONLY job is to find REAL, currently OPEN government tenders. 
+Return ONLY factual tender listings with verifiable details.
+Do NOT fabricate or invent tender numbers, dates, or departments.
+If you cannot find any matching open tenders, say "NO_RESULTS_FOUND".`
+                },
+                {
+                    role: 'user',
+                    content: `Find all currently open South African government tenders related to these keywords: ${keywords}
+
+Search these sources:
+- etenders.gov.za (South African National Treasury eTender Portal)
+- CIDB (Construction Industry Development Board)
+- Municipal and provincial tender portals
+- Government Tender Bulletin
+
+For EACH tender found, provide ALL available details:
+- Tender number / reference
+- Issuing department, municipality, or organ of state
+- Full description of the work
+- Province / location
+- Date published
+- Closing date and time
+- Contact person, email, telephone
+- Whether there is a compulsory briefing session (date, time, venue)
+- Source URL where the tender was found
+
+CRITICAL: Only include tenders with a closing date in the future (after today, ${new Date().toISOString().split('T')[0]}). Do not include expired tenders.`
+                }
+            ],
         });
 
-        const rawData = response.data;
-        const tenders = Array.isArray(rawData) ? rawData : (rawData.data || []);
+        const content = response.choices[0].message.content;
+        const citations = response.citations || [];
 
-        console.log(`✔ Received ${tenders.length} tenders from API.`);
-        return tenders;
+        console.log(`✔ Perplexity search complete.`);
+        if (citations.length > 0) {
+            console.log(`  📎 ${citations.length} source(s) cited.`);
+        }
+
+        return { content, citations };
     } catch (error) {
-        console.error('✘ Error fetching tenders:', error.message);
-        return [];
+        console.error('✘ Perplexity search error:', error.message);
+        return { content: 'NO_RESULTS_FOUND', citations: [] };
     }
 }
 
-// ─── Evaluate a single tender with Gemini (filter + format in one call) ──────
-export async function evaluate_tender_with_gemini(tenderObject) {
-    const clientKeywords = process.env.CLIENT_KEYWORDS;
-    const tenderJsonData = JSON.stringify(tenderObject);
+// ─── Use Gemini to extract and format tenders from Perplexity results ────────
+export async function format_tenders_with_gemini(searchResults, citations, keywords) {
+    const citationText = citations.length > 0
+        ? `\n\nSource URLs from search:\n${citations.map((c, i) => `[${i + 1}] ${c}`).join('\n')}`
+        : '';
 
     const zakaPrompt = `
-You are Zaka AI. Your job is to evaluate government tender metadata and format it for a client.
+You are Zaka AI, an elite tender formatting agent.
 
-**STEP 1: FILTER**
-Evaluate the following JSON tender data against these client keywords: [${clientKeywords}].
-Look primarily at the "description" and "category" fields.
-If this tender is NOT a strong match for the keywords, you must return exactly and only the word: "REJECT". Do not output anything else.
+You have received RAW SEARCH RESULTS about South African government tenders from a web search. Your job is to:
 
-**STEP 2: FORMATTING**
-If it IS a match, extract the data from the JSON and format it EXACTLY like this for Telegram. Use these exact labels and emojis. If a field is null or missing, write "Not Provided".
+**STEP 1: EXTRACT**
+Parse the search results below and identify individual tenders.
+
+**STEP 2: FILTER**  
+Only keep tenders that are a STRONG match for these client keywords: [${keywords}].
+Focus on civil engineering, construction, infrastructure, and related physical works.
+Discard anything unrelated (IT, catering, consulting, etc.) unless it specifically matches a keyword.
+
+**STEP 3: FORMAT**
+For EACH matching tender, output a message formatted EXACTLY like this (use these exact labels and emojis). If a field is not available, write "Not Provided":
 
 🚨 **ZAKA AI - NEW TENDER MATCH** 🚨
 
-**Tender Number:** [Extract from tender_No]
-**Organ of State:** [Extract from organ_of_State]
-**Tender Type:** [Extract from type]
-**Province:** [Extract from province]
-**Date Published:** [Extract from date_Published (Format to YYYY/MM/DD)]
-**Closing Date:** [Extract from closing_Date (Format to YYYY/MM/DD HH:MM)]
+**Tender Number:** [number]
+**Organ of State:** [department/municipality]
+**Description:** [full description of work]
+**Province:** [province]
+**Date Published:** [YYYY/MM/DD]
+**Closing Date:** [YYYY/MM/DD HH:MM]
 
 📍 **Location Details:**
-**Place Required:** [Extract from delivery or combine streetname, town, code]
+**Place Required:** [location/town]
 
 👤 **Contact Details:**
-**Contact Person:** [Extract from contactPerson]
-**Email:** [Extract from email]
-**Telephone:** [Extract from telephone]
+**Contact Person:** [name]
+**Email:** [email]
+**Telephone:** [phone]
 
 📅 **Briefing Session:**
-**Is there a briefing?:** [Extract from briefingSession (Yes/No)]
-**Is it compulsory?:** [Extract from briefingCompulsory (Yes/No)]
-**Briefing Date/Time:** [Extract from compulsory_briefing_session]
-**Briefing Venue:** [Extract from briefingVenue]
+**Is there a briefing?:** [Yes/No]
+**Is it compulsory?:** [Yes/No]
+**Briefing Date/Time:** [date and time]
+**Briefing Venue:** [venue]
+
+🔗 **Source:** [URL where tender was found]
 
 --
 ⚡ *Scouted by Zaka AI*
 
-Here is the tender JSON data to evaluate:
-${tenderJsonData}
+===TENDER_SEPARATOR===
+
+**IMPORTANT RULES:**
+- Separate each tender with ===TENDER_SEPARATOR===
+- If NO tenders match the keywords, return exactly: REJECT
+- Do NOT invent or fabricate any tender details
+- Extract only what is explicitly stated in the search results
+
+Here are the search results to process:
+${searchResults}
+${citationText}
 `;
 
     try {
@@ -79,7 +137,7 @@ ${tenderJsonData}
         const text = result.response.text().trim();
         return text;
     } catch (error) {
-        console.error('✘ Gemini evaluation error:', error.message);
+        console.error('✘ Gemini formatting error:', error.message);
         return 'REJECT';
     }
 }
@@ -88,7 +146,28 @@ ${tenderJsonData}
 export async function send_telegram_alert(message) {
     console.log(`Sending Telegram alert...`);
     try {
-        await telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, message, { parse_mode: 'Markdown' });
+        // Telegram has a 4096 char limit per message
+        if (message.length > 4000) {
+            // Split long messages
+            const chunks = [];
+            let remaining = message;
+            while (remaining.length > 0) {
+                if (remaining.length <= 4000) {
+                    chunks.push(remaining);
+                    break;
+                }
+                // Find a good break point
+                let breakPoint = remaining.lastIndexOf('\n', 4000);
+                if (breakPoint < 2000) breakPoint = 4000;
+                chunks.push(remaining.substring(0, breakPoint));
+                remaining = remaining.substring(breakPoint);
+            }
+            for (const chunk of chunks) {
+                await telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, chunk, { parse_mode: 'Markdown' });
+            }
+        } else {
+            await telegramBot.sendMessage(process.env.TELEGRAM_CHAT_ID, message, { parse_mode: 'Markdown' });
+        }
         console.log('✔ Telegram alert sent.');
         return true;
     } catch (error) {
